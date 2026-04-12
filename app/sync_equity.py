@@ -10,7 +10,7 @@ COMMUNITY_DB = "/app/app/community.db"
 PRIORITY_DB = "/app/app/priority_engine.db"
 MODEL_CACHE_PATH = "/models/sentence-transformers_all-MiniLM-L6-v2"
 
-print("📥 Loading local SentenceTransformer model...")
+print("Loading local SentenceTransformer model...")
 model = SentenceTransformer(MODEL_CACHE_PATH)
 
 CENSUS = {"age_range": 0.15, "disability_status": 0.12, "profession_category": 0.20}

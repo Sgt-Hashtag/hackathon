@@ -3,5 +3,8 @@ groq
 requests
 pandas
 telethon
-flask
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch
 sentence-transformers
+flask
+twilio

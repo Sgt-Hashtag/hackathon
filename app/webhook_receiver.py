@@ -2,56 +2,71 @@ from flask import Flask, request, jsonify
 import pandas as pd
 import sqlite3
 import os
-from sync_equity import run_priority_sync  # Ensure this matches your filename
+from sync_equity import run_priority_sync 
+from sms_service import send_invitation_sms
 
 app = Flask(__name__)
 
 # Use absolute paths for Docker stability
 DB_PATH = "community.db"
+PRIORITY_DB = "priority_engine.db"
+
+def upsert_resident(res):
+    """Checks if resident exists, adds if new. Returns True if added."""
+    conn = sqlite3.connect(DB_PATH)
+    phone = str(res.get("phone"))
+    exists = conn.execute("SELECT 1 FROM citizens WHERE phone = ?", (phone,)).fetchone()
+    
+    added = False
+    if not exists:
+        df_temp = pd.DataFrame([res])
+        df_temp.to_sql('citizens', conn, if_exists='append', index=False)
+        added = True
+    
+    conn.close()
+    return added
 
 @app.route('/register', methods=['POST'])
-@app.route('/ingest', methods=['POST'])
-def handle_data():
+def handle_registration():
+    """Flow 1: Self-signup from Lovable"""
     data = request.json
-    if not data:
-        return jsonify({"error": "No data received"}), 400
+    if not data: return jsonify({"error": "No data"}), 400
 
-    # Convert to DataFrame
-    df = pd.DataFrame([data] if isinstance(data, dict) else data)
+    added = upsert_resident(data)
+    run_priority_sync() # Update scores
+
+    # For self-registration, we always send a confirmation SMS
+    send_invitation_sms(data.get("first_name"), data.get("phone"))
     
-    # --- DATA CLEANING ---
-    # Ensure phone numbers stay as strings (prevents scientific notation)
-    if 'phone' in df.columns:
-        df['phone'] = df['phone'].astype(str)
+    return jsonify({"status": "Registered", "new_user": added}), 200
+
+@app.route('/ingest', methods=['POST'])
+def handle_ingest():
+    """Flow 2: Batch import from Policy Provider"""
+    data = request.json
+    if not data: return jsonify({"error": "No data"}), 400
+
+    residents = data if isinstance(data, list) else [data]
+    for res in residents:
+        upsert_resident(res)
+
+    run_priority_sync()
+
+    # Dispatch logic: Only high priority gets the SMS
+    dispatched = []
+    conn_p = sqlite3.connect(PRIORITY_DB)
+    conn_p.row_factory = sqlite3.Row
     
-    # Flatten stratum_tags if it arrives as a list (for community.db storage)
-    if 'stratum_tags' in df.columns:
-        df['stratum_tags'] = df['stratum_tags'].apply(
-            lambda x: ", ".join(x) if isinstance(x, list) else x
-        )
+    for res in residents:
+        phone = str(res.get("phone"))
+        status = conn_p.execute("SELECT * FROM analytics WHERE phone = ?", (phone,)).fetchone()
+        
+        if status and status['priority_tier'] == 'high':
+            sid = send_invitation_sms(status['first_name'], status['phone'], status['policy_id'])
+            if sid: dispatched.append(status['first_name'])
 
-    # 💾 Save to Identity Vault (community.db)
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        df.to_sql('citizens', conn, if_exists='append', index=False)
-        conn.close()
-        print(f"📥 Logged new data for: {data.get('first_name', 'Unknown')}")
-    except Exception as e:
-        print(f"❌ Database Error: {e}")
-        return jsonify({"error": "Failed to save to community.db"}), 500
-
-    # 🔥 TRIGGER THE EQUITY ENGINE
-    # This recalculates the priority_engine.db based on the new data
-    try:
-        run_priority_sync()
-        print("🚀 Priority Engine sync successful.")
-    except Exception as e:
-        print(f"⚠️ Sync Warning: {e}")
-        # We still return 200 because the data was saved, but notify about the sync issue
-        return jsonify({"status": "Data saved, but priority sync failed"}), 200
-
-    return jsonify({"status": "Success", "message": "Data saved and priority scores updated"}), 200
+    conn_p.close()
+    return jsonify({"status": "Ingested", "sms_sent_to": dispatched}), 200
 
 if __name__ == '__main__':
-    # host='0.0.0.0' is required for Docker to expose the port
     app.run(host='0.0.0.0', port=5000)

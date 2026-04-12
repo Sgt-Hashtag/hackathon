@@ -1,2 +1,4 @@
 .env
-*.json !package.json
+*.json
+*.log
+*.pyc
