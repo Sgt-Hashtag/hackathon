@@ -1,14 +1,14 @@
 FROM python:3.10-slim
 
-# Set working directory
 WORKDIR /app
 
-# Install dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy all project files
 COPY . .
 
+# Use the absolute path /models to match MODEL_CACHE_PATH in sync_equity.py
+RUN mkdir -p /models
+RUN python app/model_cache.py
 
-# We will handle running the bots in docker-compose
+# CMD ["python", "app/liaison_bot.py"]

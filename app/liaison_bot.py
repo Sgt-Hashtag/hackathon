@@ -1,6 +1,8 @@
 import os
 import sqlite3
 import logging
+import pandas as pd
+
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, 
@@ -67,9 +69,12 @@ async def handle_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if citizen:
         context.user_data['citizen'] = citizen
         await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+        profession = citizen.get('profession_category')
+        if not profession or pd.isna(profession):
+            profession = "valued resident" # fallback
 
         prompt = (
-            f"Greet {citizen['first_name']}. Explain why their background as {citizen['profession_category']} "
+            f"Greet {citizen['first_name']}. Explain why their background as {profession}. "
             f"is vital for '{policy['name']}'. Then, ask them if they have any questions about the policy "
             f"or if they are ready to join the community discussion group."
         )
