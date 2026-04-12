@@ -11,6 +11,9 @@ from telegram.ext import (
 )
 from telegram.constants import ChatMemberStatus
 from groq import Groq
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # ---------------- CONFIG ----------------
 logging.basicConfig(level=logging.INFO)
@@ -47,8 +50,18 @@ async def get_policy_context(context, chat_id):
 
 # ---------------- JOIN HANDLER ----------------
 async def handle_join(update: ChatMemberUpdated, context: ContextTypes.DEFAULT_TYPE):
+    if not update.effective_chat:
+        return
+        
+    chat_id = update.effective_chat.id
     bot_id = context.bot.id
-    chat_id = update.chat.id
+    
+    # Extract the member change details correctly
+    # For ChatMemberHandler, the data is usually in 'chat_member' or 'my_chat_member'
+    chat_member_update = update.chat_member if update.chat_member else update.my_chat_member
+    
+    if not chat_member_update:
+        return
     old_status = update.old_chat_member.status
     new_status = update.new_chat_member.status
     
@@ -108,8 +121,8 @@ async def monitor_conversation(update: Update, context: ContextTypes.DEFAULT_TYP
     # Get group title dynamically
     policy_topic = await get_policy_context(context, chat_id)
 
-    # 1. MANUAL TRIGGERS
-    if user_text.strip() == "/start" or "introduce yourself" in user_text:
+    # 1. MANUAL TRIGGERS (Immediate Exit)
+    if user_text.strip() in ["/start", "start", "introduce yourself"]:
         await context.bot.send_message(
             chat_id=chat_id,
             text=f"🏛 **I am the AI Moderator for {policy_topic}.**\n\nI monitor this debate to help you reach a consensus. You can ask me for a 'summary' at any time."
@@ -119,19 +132,45 @@ async def monitor_conversation(update: Update, context: ContextTypes.DEFAULT_TYP
     # 2. STORE HISTORY
     chat_history.setdefault(chat_id, [])
     chat_history[chat_id].append(f"{user_name}: {update.message.text}")
+    # Toxis check prompt
+    toxic_prompt = f"Is the following text toxic, a personal attack, or hateful? Answer only 'YES' or 'NO': {user_text}"
+    try:
+        check = client.chat.completions.create(
+            messages=[{"role": "user", "content": toxic_prompt}], 
+            model="llama-3.1-8b-instant"
+        )
+        if "YES" in check.choices[0].message.content.upper():
+            await update.message.delete()
+            await update.message.reply_text(f"🚫 {user_name}, your message was removed for violating community guidelines.")
+    except Exception as e:
+        logging.error(f"Toxicity Check Error: {e}")
 
-    # 3. AI DECISION LOGIC
+    # 3. THE GATEKEEPER (Prevents bot from talking on every message)
+    # The bot will ONLY call the AI if one of these is true:
+    trigger_keywords = ["summary", "summarize", "vibe", "report", "explain", "help", "what is", "welcome"]
+    is_asked_directly = f"@{context.bot.username}".lower() in user_text
+    has_trigger_word = any(word in user_text for word in trigger_keywords)
+    
+    # If it's just regular chat and no triggers, STOP HERE.
+    if not (is_asked_directly or has_trigger_word):
+        return
+
+    # 4. AI DECISION LOGIC (Only runs if a trigger is found)
     history = chat_history[chat_id][-20:]
     context_text = "\n".join(history)
 
     prompt = f"""
 You are the AI moderator for a civic discussion about: {policy_topic}.
-
+IMPORTANT: No need to start following conversations with greeting the person if once already greeted in previous conversations.
 Rules:
-- If asked for a 'summary', 'report', or 'vibe check', provide it.
-- If the user is asking about the policy, answer helpfully based on the topic: {policy_topic}.
-- Stay silent if they are debating naturally.
-- Reply ONLY 'NO_RESPONSE' if no intervention is needed.
+- Human like reponse please, avoid sounding like a bot.
+- A user has asked for intervention or mentioned a keyword.
+- If they asked for a 'summary', give a 3-bullet point summary.
+- If they asked a factual question, answer it.
+- If the request is vague, ask for clarification.
+- Welcome new users with a brief summary of the discussion so far.
+- Welcome people again only once in the conversation if some one asked to welcome back.
+- Reply ONLY 'I cannot help since the document did not contain that information' if you cannot help or no information about .
 
 Conversation:
 {context_text}
@@ -144,8 +183,24 @@ Conversation:
         )
         reply = res.choices[0].message.content.strip()
 
-        if reply != "NO_RESPONSE":
+        if "I cannot help" not in reply:
             await context.bot.send_message(chat_id=chat_id, text=reply)
+            
+            # --- THE KILL SWITCH ---
+            # If the user mentioned 'report', the bot fulfills it then leaves.
+            if "report" in user_text:
+                await context.bot.send_message(
+                    chat_id=chat_id, 
+                    text="🏁 **Final Report Delivered.** Discussion archived. I am now leaving the conversation. Goodbye."
+                )
+                print(f"🛑 Report triggered. Bot leaving chat {chat_id}")
+                
+                # Clear memory for this chat
+                chat_history.pop(chat_id, None)
+                
+                # Bot leaves the group
+                await context.bot.leave_chat(chat_id)
+                return
     except Exception as e:
         logging.error(f"Chat error: {e}")
 

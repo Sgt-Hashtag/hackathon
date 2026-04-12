@@ -9,13 +9,15 @@ from telegram.ext import (
     filters, ContextTypes, CallbackQueryHandler, ConversationHandler
 )
 from groq import Groq
+from dotenv import load_dotenv
+load_dotenv()
 
 # --- CONFIG ---
 import os
 
-TOKEN = os.getenv("TELEGRAM_TOKEN")
+TOKEN = os.getenv("LIAISON_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-DB_NAME = "community.db"
+DB_NAME = "app/community.db"
 
 client = Groq(api_key=GROQ_API_KEY)
 
@@ -24,10 +26,10 @@ START_STATE, ASK_QUESTIONS = range(2)
 
 TEST_POLICIES = {
     "policy_99": {
-        "name": "Urban Green Space",
+        "name": "Community Solar garden Project",
         "summary": "Converting the old industrial lot into a community garden.",
         "details": "The project includes 50 plots for residents, a rainwater harvesting system, and a small amphitheater for local events. It aims to reduce urban heat and improve local biodiversity.",
-        "group_link": "https://t.me/YOUR_GROUP_LINK" 
+        "group_link": "https://t.me/+Bu-lKLz17sc4MDUy" 
     }
 }
 
@@ -74,9 +76,10 @@ async def handle_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
             profession = "valued resident" # fallback
 
         prompt = (
-            f"Greet {citizen['first_name']}. Explain why their background as {profession}. "
-            f"is vital for '{policy['name']}'. Then, ask them if they have any questions about the policy "
+            f"Greet {citizen['first_name']}. Explain the main points of the {policy['name']} project briefly. Recognise the background {profession}."
+            f"Then, ask them if they have any questions about the policy "
             f"or if they are ready to join the community discussion group."
+            f"Keep it engaging."
         )
         
         res = client.chat.completions.create(messages=[{"role": "user", "content": prompt}], model="llama-3.3-70b-versatile")
