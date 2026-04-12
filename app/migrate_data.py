@@ -1,6 +1,6 @@
 import sqlite3
 
-DB_NAME = "/app/community.db"
+DB_NAME = "app/community.db"
 
 def init_db():
     conn = sqlite3.connect(DB_NAME)
@@ -23,9 +23,9 @@ def init_db():
     INSERT INTO citizens (first_name, phone, profession_category, stratum_tags, age_range)
     VALUES (?, ?, ?, ?, ?)
     """, (
-        "Max",
-        "17688434418",  # store WITHOUT country code for your LIKE query
-        "Urban Planner",
+        "Miguel",
+        "15730477370",  # store WITHOUT country code for your LIKE query
+        "Technology Enthusiast",
         "sustainability,community",
         "30-40"
     ))

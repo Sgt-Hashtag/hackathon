@@ -8,18 +8,28 @@ from sms_service import send_invitation_sms
 app = Flask(__name__)
 
 # Use absolute paths for Docker stability
-DB_PATH = "community.db"
-PRIORITY_DB = "priority_engine.db"
+DB_PATH = "app/community.db"
+PRIORITY_DB = "app/priority_engine.db"
 
 def upsert_resident(res):
-    """Checks if resident exists, adds if new. Returns True if added."""
     conn = sqlite3.connect(DB_PATH)
-    phone = str(res.get("phone"))
+    # Standardize phone format (remove spaces and +)
+    phone = str(res.get("phone", "")).replace(" ", "").replace("+", "")
+    
     exists = conn.execute("SELECT 1 FROM citizens WHERE phone = ?", (phone,)).fetchone()
     
     added = False
     if not exists:
-        df_temp = pd.DataFrame([res])
+        # Map frontend keys to DB keys if necessary
+        clean_data = {
+            "first_name": res.get("first_name"),
+            "last_name": res.get("last_name"),
+            "phone": phone,
+            "profession_category": res.get("occupation"), # occupation from frontend
+            "stratum_tags": ",".join(res.get("interests", [])) if res.get("interests") else "",
+            "age_range": res.get("birthday") # You can calculate exact age later
+        }
+        df_temp = pd.DataFrame([clean_data])
         df_temp.to_sql('citizens', conn, if_exists='append', index=False)
         added = True
     

@@ -6,8 +6,8 @@ import math
 from sentence_transformers import SentenceTransformer
 
 # Docker-safe paths - Adjusting to the root of your shared volume
-COMMUNITY_DB = "/app/app/community.db"
-PRIORITY_DB = "/app/app/priority_engine.db"
+COMMUNITY_DB = "app/community.db"
+PRIORITY_DB = "app/priority_engine.db"
 MODEL_CACHE_PATH = "/models/sentence-transformers_all-MiniLM-L6-v2"
 
 print("Loading local SentenceTransformer model...")
