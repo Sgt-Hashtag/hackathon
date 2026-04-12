@@ -1,154 +1,161 @@
 import os
 import sqlite3
 import logging
-from telegram import Update
-from telegram.ext import Application, MessageHandler, filters, ContextTypes
+from telegram import Update, ChatMemberUpdated
+from telegram.ext import (
+    Application,
+    MessageHandler,
+    ChatMemberHandler,
+    ContextTypes,
+    filters
+)
+from telegram.constants import ChatMemberStatus
 from groq import Groq
 
-# 1. LOGGING & CONFIG
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', 
-    level=logging.INFO
-)
+# ---------------- CONFIG ----------------
+logging.basicConfig(level=logging.INFO)
 
 TOKEN = os.getenv("MODERATOR_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-DB_PATH = "community.db" # Standard path for shared Docker volume
+DB_PATH = "app/community.db" # Standard path for shared Docker volume
 
 client = Groq(api_key=GROQ_API_KEY)
 
-# Local memory to store the debate transcript
 chat_history = {}
 
-# --- 2. CORE FUNCTIONS ---
+print("🚀 Bot starting...")
 
-async def monitor_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Monitors messages, filters toxicity, and triggers the final report."""
-    chat_id = update.effective_chat.id
-    user_text = update.message.text
-    user_name = update.effective_user.first_name
-
-    # --- AI TOXICITY FILTER ---
-    # Fast check using a smaller model to keep the debate moving
-    toxic_prompt = f"Is the following text toxic, a personal attack, or hateful? Answer only 'YES' or 'NO': {user_text}"
+# ---------------- AI HELPERS ----------------
+async def send_ai_response(context, chat_id, prompt):
     try:
-        check = client.chat.completions.create(
-            messages=[{"role": "user", "content": toxic_prompt}], 
+        res = client.chat.completions.create(
+            messages=[{"role": "user", "content": prompt}],
             model="llama-3.1-8b-instant"
         )
-        if "YES" in check.choices[0].message.content.upper():
-            await update.message.delete()
-            await update.message.reply_text(f"🚫 {user_name}, your message was removed for violating community guidelines.")
-            return
+        reply = res.choices[0].message.content
+        await context.bot.send_message(chat_id=chat_id, text=reply)
     except Exception as e:
-        logging.error(f"Toxicity Check Error: {e}")
+        logging.error(f"AI error: {e}")
 
-    # --- STORE HISTORY ---
-    if chat_id not in chat_history:
-        chat_history[chat_id] = []
+async def get_policy_context(context, chat_id):
+    """Helper to fetch the group name as the policy topic"""
+    try:
+        chat = await context.bot.get_chat(chat_id)
+        return chat.title if chat.title else "this civic project"
+    except:
+        return "this community policy"
+
+# ---------------- JOIN HANDLER ----------------
+async def handle_join(update: ChatMemberUpdated, context: ContextTypes.DEFAULT_TYPE):
+    bot_id = context.bot.id
+    chat_id = update.chat.id
+    old_status = update.old_chat_member.status
+    new_status = update.new_chat_member.status
     
-    chat_history[chat_id].append(f"{user_name}: {user_text}")
+    policy_topic = await get_policy_context(context, chat_id)
 
-    # --- TRIGGER: END OF CONVERSATION ---
-    if "end conversation" in user_text.lower():
-        await generate_final_report(update, context)
-
-async def welcome_and_summarize(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Provides a briefing for new members so they can catch up instantly."""
-    chat_id = update.effective_chat.id
-    history = chat_history.get(chat_id, [])
-    
-    if not history:
+    # CASE 1: THE BOT ITSELF IS ADDED
+    if new_status == ChatMemberStatus.MEMBER and update.new_chat_member.user.id == bot_id:
+        print(f"🤖 Bot added to group: {policy_topic}")
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=(
+                f"🏛 **Hello! I am the PoliModerator AI for this chat.**\n\n"
+                f"I've been assigned to moderate the discussion regarding: **{policy_topic}**.\n\n"
+                "I will help clarify policy details, provide summaries, and ensure "
+                "your feedback is recorded for the City Council. How can I assist you today?"
+            )
+        )
         return
 
-    # Use the last 15 messages for context
-    context_text = "\n".join(history[-15:])
-    summary_prompt = (
-        f"A new resident just joined. Summarize the current debate vibe and main arguments "
-        f"concisely so they can contribute immediately. History:\n{context_text}"
-    )
+    # CASE 2: A REGULAR USER JOINS
+    if old_status != ChatMemberStatus.MEMBER and new_status == ChatMemberStatus.MEMBER:
+        user_name = update.new_chat_member.user.first_name
+        history = chat_history.get(chat_id, [])
+
+        if len(history) < 3:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=f"👋 Welcome {user_name}! We are discussing **{policy_topic}**. Feel free to share your thoughts."
+            )
+            return
+
+        context_text = "\n".join(history[-15:])
+        decision_prompt = f"Topic: {policy_topic}\n\nHistory:\n{context_text}\n\n{user_name} joined. Should I summarize? YES/NO."
+        
+        try:
+            check = client.chat.completions.create(
+                messages=[{"role": "user", "content": decision_prompt}],
+                model="llama-3.1-8b-instant"
+            )
+            if "YES" in check.choices[0].message.content.upper():
+                summary_prompt = f"Welcome {user_name}. Briefly summarize our discussion about {policy_topic} in 2 sentences:\n{context_text}"
+                await send_ai_response(context, chat_id, summary_prompt)
+            else:
+                await context.bot.send_message(chat_id=chat_id, text=f"👋 Welcome {user_name}!")
+        except Exception as e:
+            logging.error(f"Join error: {e}")
+
+# ---------------- MAIN CHAT HANDLER ----------------
+async def monitor_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.message.text:
+        return
+
+    chat_id = update.effective_chat.id
+    user_text = update.message.text.lower()
+    user_name = update.effective_user.first_name
+    
+    # Get group title dynamically
+    policy_topic = await get_policy_context(context, chat_id)
+
+    # 1. MANUAL TRIGGERS
+    if user_text.strip() == "/start" or "introduce yourself" in user_text:
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=f"🏛 **I am the AI Moderator for {policy_topic}.**\n\nI monitor this debate to help you reach a consensus. You can ask me for a 'summary' at any time."
+        )
+        return
+
+    # 2. STORE HISTORY
+    chat_history.setdefault(chat_id, [])
+    chat_history[chat_id].append(f"{user_name}: {update.message.text}")
+
+    # 3. AI DECISION LOGIC
+    history = chat_history[chat_id][-20:]
+    context_text = "\n".join(history)
+
+    prompt = f"""
+You are the AI moderator for a civic discussion about: {policy_topic}.
+
+Rules:
+- If asked for a 'summary', 'report', or 'vibe check', provide it.
+- If the user is asking about the policy, answer helpfully based on the topic: {policy_topic}.
+- Stay silent if they are debating naturally.
+- Reply ONLY 'NO_RESPONSE' if no intervention is needed.
+
+Conversation:
+{context_text}
+"""
 
     try:
         res = client.chat.completions.create(
-            messages=[{"role": "user", "content": summary_prompt}],
-            model="llama-3.1-8b-instant"
-        )
-        await update.message.reply_text(
-            f"👋 Welcome! Here is a briefing on the current discussion:\n\n{res.choices[0].message.content}"
-        )
-    except Exception as e:
-        logging.error(f"Summarization Error: {e}")
-
-async def generate_final_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Synthesizes consensus, updates DB counts, and closes the group."""
-    chat_id = update.effective_chat.id
-    history_list = chat_history.get(chat_id, [])
-
-    if not history_list:
-        await update.message.reply_text("No conversation history found.")
-        return
-
-    await update.message.reply_text("📝 'End Conversation' detected. Analyzing discourse and recording participation...")
-
-    # 1. GENERATE THE HABERMASIAN REPORT
-    transcript = "\n".join(history_list)
-    report_prompt = (
-        "You are a Senior Policy Analyst. Generate a 'Civic Feedback Report' from this transcript. "
-        "Highlight: 1. Key Areas of Agreement, 2. Unresolved Concerns, 3. Proposed Solutions. "
-        f"Transcript:\n{transcript}"
-    )
-
-    try:
-        completion = client.chat.completions.create(
-            messages=[{"role": "user", "content": report_prompt}],
+            messages=[{"role": "user", "content": prompt}],
             model="llama-3.3-70b-versatile"
         )
-        report = completion.choices[0].message.content
+        reply = res.choices[0].message.content.strip()
 
-        # 2. UPDATE PARTICIPATION COUNTS (The Feedback Loop)
-        participants = set([entry.split(":")[0] for entry in history_list])
-        updated_count = 0
-        
-        conn = sqlite3.connect(DB_PATH)
-        for name in participants:
-            # We increment the count to increase 'Fatigue' for the next scoring round
-            conn.execute("""
-                UPDATE citizens 
-                SET past_participation_count = COALESCE(past_participation_count, 0) + 1 
-                WHERE first_name = ?
-            """, (name,))
-            updated_count += 1
-        conn.commit()
-        conn.close()
-
-        # 3. OUTPUT & GROUP CLOSURE
-        await update.message.reply_text(f"🏛 **OFFICIAL POLICY FEEDBACK REPORT**\n\n{report}")
-        await update.message.reply_text(
-            f"🔒 Discussion concluded. Participation recorded for {updated_count} residents.\n"
-            "The Moderator Agent is now leaving. This space is archived."
-        )
-
-        # 4. LEAVE GROUP (Simulates group deletion/closure)
-        await context.bot.leave_chat(chat_id)
-        
-        # Clear memory
-        del chat_history[chat_id]
-
+        if reply != "NO_RESPONSE":
+            await context.bot.send_message(chat_id=chat_id, text=reply)
     except Exception as e:
-        await update.message.reply_text(f"⚠️ Error during closure: {e}")
-        logging.error(f"Report Generation Error: {e}")
+        logging.error(f"Chat error: {e}")
 
-# --- 3. EXECUTION ---
-if __name__ == '__main__':
-    if not TOKEN:
-        print("❌ Error: MODERATOR_TOKEN not found in environment.")
-        exit(1)
+# ---------------- MAIN ----------------
+if __name__ == "__main__":
+    app = Application.builder().token(TOKEN).build()
 
-    print("--- MODERATOR BOT IS ACTIVE ---")
-    application = Application.builder().token(TOKEN).build()
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, monitor_conversation))
+    app.add_handler(ChatMemberHandler(handle_join, ChatMemberHandler.CHAT_MEMBER))
+    app.add_handler(ChatMemberHandler(handle_join, ChatMemberHandler.MY_CHAT_MEMBER)) # For bot's own join
 
-    # Handlers
-    application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), monitor_conversation))
-    application.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, welcome_and_summarize))
-
-    application.run_polling()
+    print("🤖 Bot is running...")
+    app.run_polling(allowed_updates=["message", "chat_member", "my_chat_member"])
