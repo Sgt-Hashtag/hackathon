@@ -88,17 +88,16 @@ This layer ensures the model is **operationally implementable**, not purely norm
 
 ## 3. Core Equation
 
-\[
-P_i = \Big[(I_a \times 0.4) + (G_d \times 0.6)\Big] \times A_s \times F_p
-\]
+## Participation Formula
 
-Where:
+$$P_i = [(I_a \times 0.4) + (G_d \times 0.6)] \times A_s \times F_p$$
 
-- \(P_i\): Participation priority score for citizen *i*
-- \(I_a\): Impact Alignment (policy relevance)
-- \(G_d\): Representation Gap (structural underrepresentation)
-- \(A_s\): Accessibility multiplier (participation friction correction)
-- \(F_p\): Fatigue penalty (participation frequency decay)
+**Where:**
+- $P_i$: Participation priority score for citizen *i*
+- $I_a$: Impact Alignment (policy relevance)
+- $G_d$: Representation Gap (structural underrepresentation)
+- $A_s$: Accessibility multiplier (participation friction correction)
+- $F_p$: Fatigue penalty (participation frequency decay)
 
 ---
 
